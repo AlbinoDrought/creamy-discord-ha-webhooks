@@ -5,7 +5,7 @@ RUN CGO_ENABLED=0 go get && CGO_ENABLED=0 go test && CGO_ENABLED=0 go build -o /
 
 FROM alpine:3.14
 
-RUN apk add --update --no-cache tini ca-certificates
+RUN apk add --update --no-cache tini ca-certificates tzdata
 USER 1000
 COPY --from=builder /creamy-discord-ha-webhooks /creamy-discord-ha-webhooks
 ENTRYPOINT ["tini", "--"]

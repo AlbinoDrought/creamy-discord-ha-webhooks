@@ -15,6 +15,7 @@ CDHAW_CHANNEL_ID=your-channel-id,your-other-channel-id \
 CDHAW_GARAGE_URL=http://1.2.3.4/events \
 CDHAW_WEBHOOK_CLOSE_URL=https://homeassistant.example/api/webhook/your-close-garage-webhook-id \
 CDHAW_WEBHOOK_OPEN_URL=https://homeassistant.example/api/webhook/your-open-garage-webhook-id \
+TZ=UTC \
 go run main.go
 ```
 
