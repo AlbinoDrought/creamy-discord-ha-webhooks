@@ -1,6 +1,8 @@
 # Creamy Discord Home Assistant Webhooks
 
-Show a nice message in a Discord channel.
+Show a nice message in a Discord channel:
+
+![](./.readme/sample-message.png)
 
 Clicking buttons on that message performs actions in Home Assistant.
 
@@ -17,3 +19,7 @@ go run main.go
 ```
 
 See https://discord.com/developers/docs/topics/oauth2#bots for information on creating a Discord bot.
+
+## Disclaimer
+
+This is a toy project
