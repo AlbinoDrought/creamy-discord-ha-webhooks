@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"sync"
@@ -15,9 +16,11 @@ import (
 )
 
 var (
-	guildID   string
-	channelID string
-	garageURL string
+	guildID         string
+	channelID       string
+	garageURL       string
+	webhookOpenURL  string
+	webhookCloseURL string
 )
 
 type DoorOperation int
@@ -44,14 +47,32 @@ type State struct {
 	operationLock sync.Mutex
 }
 
-func (s *State) Update(cb func()) {
-	s.lock.Lock()
+func (s *State) Read(cb func()) {
+	s.lock.RLock()
+	defer s.lock.RUnlock()
 	cb()
-	s.lock.Unlock()
-	select {
-	case s.change <- true:
-	default:
-	}
+}
+
+func (s *State) Update(cb func()) {
+	defer func() {
+		select {
+		case s.change <- true:
+		default:
+		}
+	}()
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	cb()
+}
+
+func (s *State) SaveMessageID(messageID string) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	s.SaveMessageIDAlreadyLocked(messageID)
+}
+
+func (s *State) SaveMessageIDAlreadyLocked(messageID string) {
+	s.MessageID = messageID
 }
 
 type DiscordMessage struct {
@@ -126,9 +147,11 @@ func main() {
 	guildID = os.Getenv("CDHAW_GUILD_ID")
 	channelID = os.Getenv("CDHAW_CHANNEL_ID")
 	garageURL = os.Getenv("CDHAW_GARAGE_URL")
+	webhookOpenURL = os.Getenv("CDHAW_WEBHOOK_OPEN_URL")
+	webhookCloseURL = os.Getenv("CDHAW_WEBHOOK_CLOSE_URL")
 
-	if authenticationToken == "" || guildID == "" || channelID == "" || garageURL == "" {
-		log.Fatal("require CDHAW_TOKEN, CDHAW_GUILD_ID, CDHAW_CHANNEL_ID, CDHAW_GARAGE_URL")
+	if authenticationToken == "" || guildID == "" || channelID == "" || garageURL == "" || webhookOpenURL == "" || webhookCloseURL == "" {
+		log.Fatal("require CDHAW_TOKEN, CDHAW_GUILD_ID, CDHAW_CHANNEL_ID, CDHAW_GARAGE_URL, CDHAW_WEBHOOK_OPEN_URL, CDHAW_WEBHOOK_CLOSE_URL")
 	}
 
 	state.change = make(chan bool, 10)
@@ -156,11 +179,19 @@ func main() {
 	}()
 	go func() {
 		for event := range events {
-			state.Update(func() {
-				now := time.Now()
-				state.DoorState = event.Mapped
-				state.DoorStateChangedAt = &now
+			nc := false
+			state.Read(func() {
+				if state.DoorState != event.Mapped {
+					nc = true
+				}
 			})
+			if nc { // only trigger update if required
+				state.Update(func() {
+					now := time.Now()
+					state.DoorState = event.Mapped
+					state.DoorStateChangedAt = &now
+				})
+			}
 		}
 	}()
 
@@ -185,7 +216,7 @@ func main() {
 			if err != nil {
 				return err
 			}
-			state.MessageID = st.ID
+			state.SaveMessageIDAlreadyLocked(st.ID)
 		} else {
 			_, err := session.ChannelMessageEditComplex(&discordgo.MessageEdit{
 				ID:         state.MessageID,
@@ -257,9 +288,7 @@ func interactionCreate(s *discordgo.Session, event *discordgo.InteractionCreate)
 			if err != nil {
 				log.Printf("failed to get response to assistant-buttons command: %v", err)
 			} else {
-				state.lock.Lock()
-				state.MessageID = st.ID
-				state.lock.Unlock()
+				state.SaveMessageID(st.ID)
 			}
 			return
 		}
@@ -273,9 +302,7 @@ func interactionCreate(s *discordgo.Session, event *discordgo.InteractionCreate)
 		defer state.operationLock.Unlock()
 
 		if event.Interaction.Message != nil {
-			state.lock.Lock()
-			state.MessageID = event.Interaction.Message.ID
-			state.lock.Unlock()
+			state.SaveMessageID(event.Interaction.Message.ID)
 		}
 
 		switch event.Interaction.MessageComponentData().CustomID {
@@ -291,9 +318,38 @@ func interactionCreate(s *discordgo.Session, event *discordgo.InteractionCreate)
 				state.DoorOperation = DoorOperationOpen
 			})
 
-			// todo: call open webhook here
-			time.Sleep(3 * time.Second)
-			// todo: wait for open to finish here
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+
+			req, err := http.NewRequestWithContext(ctx, "POST", webhookOpenURL, nil)
+			if err != nil {
+				log.Printf("failed to create a-1-go request")
+			} else {
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					log.Printf("failed to perform a-1-go request")
+				} else {
+					if resp.Body != nil {
+						resp.Body.Close()
+					}
+				}
+			}
+
+			fin := false
+			for range 30 {
+				time.Sleep(time.Second)
+				state.Read(func() {
+					if state.DoorState == garageeventstream.DoorStateOpen {
+						fin = true
+					}
+				})
+				if fin {
+					break
+				}
+			}
+			if !fin {
+				log.Printf("no change after 30s, skipping wait-for-close")
+			}
 
 			state.Update(func() {
 				state.DoorOperation = DoorOperationWaiting
@@ -312,9 +368,38 @@ func interactionCreate(s *discordgo.Session, event *discordgo.InteractionCreate)
 				state.DoorOperation = DoorOperationClose
 			})
 
-			// todo: call close webhook here
-			time.Sleep(3 * time.Second)
-			// todo: wait for close to finish here
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+
+			req, err := http.NewRequestWithContext(ctx, "POST", webhookCloseURL, nil)
+			if err != nil {
+				log.Printf("failed to create a-1-gc request")
+			} else {
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					log.Printf("failed to perform a-1-gc request")
+				} else {
+					if resp.Body != nil {
+						resp.Body.Close()
+					}
+				}
+			}
+
+			fin := false
+			for range 30 {
+				time.Sleep(time.Second)
+				state.Read(func() {
+					if state.DoorState == garageeventstream.DoorStateClosed {
+						fin = true
+					}
+				})
+				if fin {
+					break
+				}
+			}
+			if !fin {
+				log.Printf("no change after 30s, skipping wait-for-close")
+			}
 
 			state.Update(func() {
 				state.DoorOperation = DoorOperationWaiting
@@ -340,11 +425,11 @@ func interactionCreate(s *discordgo.Session, event *discordgo.InteractionCreate)
 			changed := false
 			for range 30 {
 				time.Sleep(time.Second)
-				state.lock.Lock()
-				if state.DoorState != garageeventstream.DoorStateUnknown {
-					changed = true
-				}
-				state.lock.Unlock()
+				state.Read(func() {
+					if state.DoorState != garageeventstream.DoorStateUnknown {
+						changed = true
+					}
+				})
 				if changed {
 					break
 				}

@@ -43,11 +43,11 @@ type Event struct {
 }
 
 type StreamState struct {
-	ID               string `json:"id"`
-	Value            int    `json:"value"`
-	State            string `json:"state"`
-	CurrentOperation string `json:"current_operation"`
-	Position         int    `json:"position"`
+	ID               string  `json:"id"`
+	Value            float32 `json:"value"`
+	State            string  `json:"state"`
+	CurrentOperation string  `json:"current_operation"`
+	Position         float32 `json:"position"`
 }
 
 type GarageEventStream struct {
@@ -107,16 +107,15 @@ func (ges *GarageEventStream) poll() error {
 		}
 
 		log.Printf("received garage door update: %+v", gstate)
-		var mapped DoorState
-		switch gstate.State {
-		case "CLOSED":
-			mapped = DoorStateClosed
-		case "OPEN":
+		mapped := DoorStateUnknown
+		if gstate.State == "OPEN" && gstate.CurrentOperation == "IDLE" {
 			mapped = DoorStateOpen
-		case "CLOSING":
+		} else if gstate.State == "OPEN" && gstate.CurrentOperation == "CLOSING" {
 			mapped = DoorStateClosing
-		case "OPENING":
+		} else if gstate.State == "OPEN" && gstate.CurrentOperation == "OPENING" {
 			mapped = DoorStateOpening
+		} else if gstate.State == "CLOSED" && gstate.CurrentOperation == "IDLE" {
+			mapped = DoorStateClosed
 		}
 		select {
 		case ges.events <- Event{State: gstate, Mapped: mapped}:
